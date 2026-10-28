@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121212">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Remote">
+  <title>Spotify Remote</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="icon" href="icon-180.png">
+  <!-- ?v= は更新したときに古いファイルがキャッシュから使われないようにするため。変更したら数字を上げる -->
+  <link rel="stylesheet" href="style.css?v=9">
+</head>
+<body>
+  <!-- 初期設定 / ログイン画面 -->
+  <section id="setup" class="screen" hidden>
+    <h1>Spotify Remote</h1>
+    <p class="muted">Spotify for Developers で作ったアプリの Client ID を入力してください。</p>
+    <label class="field">
+      <span>Client ID</span>
+      <input id="client-id" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="32文字の英数字">
+    </label>
+    <p class="muted small">Redirect URI には次の値を登録します：</p>
+    <code id="redirect-uri" class="copy"></code>
+    <button id="login-btn" class="primary">Spotify でログイン</button>
+    <p id="setup-error" class="error" hidden></p>
+  </section>
+
+  <!-- メイン画面 -->
+  <main id="player" class="screen" hidden>
+    <header class="topbar">
+      <button id="device-btn" class="chip" aria-label="再生デバイスを選ぶ">
+        <span class="dot" id="device-dot"></span><span id="device-name">デバイスなし</span>
+      </button>
+      <div class="top-actions">
+        <button id="standby-btn" class="icon-btn" aria-label="スタンバイ（時計）モード">
+          <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm1 3v4.6l3.2 3.2-1.4 1.4L11 12.4V7h2Z"/></svg>
+        </button>
+        <button id="search-btn" class="icon-btn" aria-label="曲を探してキューに追加">
+          <svg viewBox="0 0 24 24"><path d="M10 2a8 8 0 0 1 6.32 12.9l5.39 5.4-1.41 1.4-5.4-5.39A8 8 0 1 1 10 2Zm0 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z"/></svg>
+        </button>
+        <button id="settings-btn" class="icon-btn" aria-label="カスタマイズ">
+          <svg viewBox="0 0 24 24"><path d="M3 5h10v2H3V5Zm14 0h4v2h-4V5Zm-2-2h2v6h-2V3ZM3 11h4v2H3v-2Zm8 0h10v2H11v-2Zm-2-2h2v6H9V9Zm-6 8h10v2H3v-2Zm14 0h4v2h-4v-2Zm-2-2h2v6h-2v-6Z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div id="notice" class="notice" hidden></div>
+    <div id="scope-bar" class="notice" hidden>
+      新しい機能を使うには、ログインし直してください。
+      <button id="scope-relogin" class="link">ログインし直す</button>
+    </div>
+
+    <!-- 並び順は設定で入れ替える。data-section が設定上のID -->
+    <div id="sections">
+      <!-- 左右スワイプで曲送り、ダブルタップでいいね -->
+      <section data-section="art" class="sec art-sec">
+        <div id="disc-wrap" class="disc-wrap">
+          <div class="disc"><img id="art" class="art" alt="" draggable="false"></div>
+        </div>
+        <svg id="burst" class="burst" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 3 4.5 6.7 4.5c2.1 0 3.6 1.1 5.3 3 1.7-1.9 3.2-3 5.3-3 3.7 0 5.8 3.9 4.3 7.3C19.5 16.4 12 21 12 21Z"/></svg>
+      </section>
+
+      <section data-section="info" class="sec meta">
+        <div class="meta-text">
+          <div id="title" class="title">—</div>
+          <div id="artist" class="artist muted">—</div>
+        </div>
+        <button id="like-btn" class="icon-btn add-btn" aria-label="いいね">
+          <svg viewBox="0 0 24 24"><path id="like-path" d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 3 4.5 6.7 4.5c2.1 0 3.6 1.1 5.3 3 1.7-1.9 3.2-3 5.3-3 3.7 0 5.8 3.9 4.3 7.3C19.5 16.4 12 21 12 21Zm0-2.4c2.3-1.5 6.3-4.6 7.8-7.6 1-2.1-.3-4.5-2.6-4.5-1.5 0-2.6.9-4.4 3l-.8.9-.8-.9c-1.8-2.1-2.9-3-4.4-3-2.3 0-3.6 2.4-2.6 4.5 1.5 3 5.5 6.1 7.8 7.6Z"/></svg>
+        </button>
+        <button id="add-playlist-btn" class="icon-btn add-btn" aria-label="プレイリストに追加">
+          <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm1 3v4h4v2h-4v4h-2v-4H7v-2h4V7h2Z"/></svg>
+        </button>
+      </section>
+
+      <section data-section="seek" class="sec seek">
+        <input id="seek" type="range" min="0" max="1000" value="0" aria-label="再生位置">
+        <div class="times muted small"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+      </section>
+
+      <section data-section="controls" class="sec controls">
+        <button id="shuffle-btn" class="icon-btn toggle" aria-label="シャッフル">
+          <svg viewBox="0 0 24 24"><path d="M17 3l4 4-4 4V8h-2.6l-3 3.6-1.3-1.5L13.4 6H17V3ZM3 6h4.6l9.8 12H17v-3l4 4-4 4v-3h-.6L6.6 8H3V6Zm0 10h3.6l2-2.4 1.3 1.5L7.6 18H3v-2Z"/></svg>
+        </button>
+        <button id="prev-btn" class="icon-btn" aria-label="前の曲">
+          <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6V5Zm3.5 7L19 5v14l-9.5-7Z"/></svg>
+        </button>
+        <button id="play-btn" class="play" aria-label="再生 / 一時停止">
+          <svg id="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z"/></svg>
+          <svg id="icon-pause" viewBox="0 0 24 24" hidden><path d="M6 5h4v14H6V5Zm8 0h4v14h-4V5Z"/></svg>
+        </button>
+        <button id="next-btn" class="icon-btn" aria-label="次の曲">
+          <svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2V5ZM5 5l9.5 7L5 19V5Z"/></svg>
+        </button>
+        <button id="repeat-btn" class="icon-btn toggle" aria-label="リピート">
+          <svg viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7Zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4Z"/></svg>
+          <span id="repeat-one" class="badge" hidden>1</span>
+        </button>
+      </section>
+
+      <section data-section="volume" class="sec">
+        <div class="volume">
+          <svg viewBox="0 0 24 24" class="vol-icon"><path d="M3 9v6h4l5 5V4L7 9H3Zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4Z"/></svg>
+          <input id="volume" type="range" min="0" max="100" value="50" aria-label="音量">
+          <span id="vol-val" class="muted small">50</span>
+        </div>
+        <p id="vol-note" class="muted small center" hidden>このデバイスはアプリからの音量変更に対応していません</p>
+      </section>
+
+      <section data-section="stats" class="sec stats">
+        <h2>今日聞いた時間</h2>
+        <div class="stat-row">
+          <div><div id="stat-time" class="big">–</div><div class="muted small">再生時間</div></div>
+          <div><div id="stat-count" class="big">–</div><div class="muted small">曲</div></div>
+        </div>
+        <p id="stat-top" class="muted small" hidden></p>
+        <p id="stat-note" class="muted small" hidden></p>
+        <button id="relogin-btn" class="secondary" hidden>ログインし直して表示する</button>
+        <button id="card-btn" class="secondary">今日のまとめカードを作る</button>
+        <div class="btn-row">
+          <button id="report-btn" class="secondary">振り返り・ランキング</button>
+          <button id="quiz-btn" class="secondary">イントロクイズ</button>
+        </div>
+      </section>
+
+      <section data-section="queue" class="sec queue">
+        <h2>次に再生 <span id="queue-end" class="muted small"></span></h2>
+        <ol id="queue-list"></ol>
+        <p id="queue-empty" class="muted small" hidden>キューは空です</p>
+      </section>
+    </div>
+
+    <footer class="foot">
+      <button id="customize-link" class="link">カスタマイズ</button>
+      <span class="muted small">・</span>
+      <button id="logout-btn" class="link">ログアウト</button>
+    </footer>
+  </main>
+
+  <!-- デバイス選択シート -->
+  <div id="device-sheet" class="sheet" hidden>
+    <div class="sheet-body">
+      <h2>再生デバイス</h2>
+      <ul id="device-list"></ul>
+      <p class="muted small">一覧にない場合は、その端末で Spotify アプリを開いてください。</p>
+      <button class="close-sheet secondary">閉じる</button>
+    </div>
+  </div>
+
+  <!-- 検索シート -->
+  <div id="search-sheet" class="sheet" hidden>
+    <div class="sheet-body tall">
+      <form id="search-form">
+        <input id="search-input" type="search" placeholder="曲名・アーティスト" autocomplete="off">
+      </form>
+      <ul id="search-list"></ul>
+      <button class="close-sheet secondary">閉じる</button>
+    </div>
+  </div>
+
+  <!-- 次に再生の曲を押したときのメニュー -->
+  <div id="track-sheet" class="sheet" hidden>
+    <div class="sheet-body">
+      <ul id="track-sheet-head"></ul>
+      <button id="skip-to-btn" class="menu-item">この曲までスキップ</button>
+      <button id="track-playlist-btn" class="menu-item">プレイリストに追加</button>
+      <p class="muted small">Spotify の仕様で、次に再生の曲の並べ替え・削除はアプリからできません。</p>
+      <button class="close-sheet secondary">閉じる</button>
+    </div>
+  </div>
+
+  <!-- プレイリスト選択シート -->
+  <div id="playlist-sheet" class="sheet" hidden>
+    <div class="sheet-body">
+      <h2>プレイリストに追加</h2>
+      <p id="playlist-target" class="muted small"></p>
+      <ul id="playlist-list"></ul>
+      <button id="playlist-relogin" class="primary" hidden>ログインし直して使えるようにする</button>
+      <button class="close-sheet secondary">閉じる</button>
+    </div>
+  </div>
+
+  <!-- カスタマイズシート -->
+  <div id="settings-sheet" class="sheet" hidden>
+    <div class="sheet-body">
+      <h2>カスタマイズ</h2>
+
+      <h3>表示する項目と並び順</h3>
+      <ul id="section-list" class="sec-list"></ul>
+
+      <h3>色とテーマ</h3>
+      <div class="label">背景</div>
+      <div class="seg" data-key="bg">
+        <button data-value="dark">ダーク</button>
+        <button data-value="black">ブラック</button>
+        <button data-value="light">ライト</button>
+        <button data-value="art">ジャケット色</button>
+        <button data-value="aurora">オーロラ</button>
+      </div>
+      <div class="label">ジャケットの見せ方</div>
+      <div class="seg" data-key="artStyle">
+        <button data-value="square">四角</button>
+        <button data-value="vinyl">レコード盤</button>
+      </div>
+      <div class="label">アクセントカラー</div>
+      <div id="swatches" class="swatches"></div>
+
+      <h3>サイズと表示量</h3>
+      <div class="label">ジャケット画像</div>
+      <div class="seg" data-key="art">
+        <button data-value="s">小</button>
+        <button data-value="m">中</button>
+        <button data-value="l">大</button>
+      </div>
+      <div class="label">文字</div>
+      <div class="seg" data-key="font">
+        <button data-value="s">小</button>
+        <button data-value="m">標準</button>
+        <button data-value="l">大</button>
+      </div>
+      <div class="label">「次に再生」の曲数</div>
+      <div class="seg" data-key="queueCount">
+        <button data-value="3">3</button>
+        <button data-value="5">5</button>
+        <button data-value="10">10</button>
+        <button data-value="20">20</button>
+      </div>
+
+      <h3>スタンバイ（時計）モード</h3>
+      <div class="label">表示する項目と並び順</div>
+      <ul id="sb-section-list" class="sec-list"></ul>
+      <div class="label">時計の大きさ</div>
+      <div class="seg" data-key="sb.size">
+        <button data-value="s">小</button>
+        <button data-value="m">中</button>
+        <button data-value="l">大</button>
+      </div>
+      <div class="label">時計の太さ</div>
+      <div class="seg" data-key="sb.weight">
+        <button data-value="thin">細い</button>
+        <button data-value="regular">標準</button>
+        <button data-value="bold">太い</button>
+      </div>
+      <div class="label">時刻の表示</div>
+      <div class="seg" data-key="sb.hour12">
+        <button data-value="false">24時間</button>
+        <button data-value="true">12時間</button>
+      </div>
+      <div class="seg seg-gap" data-key="sb.seconds">
+        <button data-value="false">秒なし</button>
+        <button data-value="true">秒あり</button>
+      </div>
+      <div class="label">横向きのときの配置</div>
+      <div class="seg" data-key="sb.landscape">
+        <button data-value="left">時計を左</button>
+        <button data-value="right">時計を右</button>
+        <button data-value="stack">縦に並べる</button>
+      </div>
+      <div class="label">背景</div>
+      <div class="seg" data-key="sb.bg">
+        <button data-value="glow">ジャケット色の光</button>
+        <button data-value="blur">ジャケットをぼかす</button>
+        <button data-value="black">真っ黒</button>
+      </div>
+      <div class="label">夜間モード（文字を暗い赤に）</div>
+      <div class="seg" data-key="sb.night">
+        <button data-value="off">オフ</button>
+        <button data-value="auto">22時〜6時</button>
+        <button data-value="on">常にオン</button>
+      </div>
+      <button id="sb-preview" class="secondary">スタンバイを開いて確認</button>
+
+      <button id="reset-settings" class="secondary">初期設定に戻す</button>
+      <button class="close-sheet secondary">閉じる</button>
+    </div>
+  </div>
+
+  <!-- 振り返り（端末に貯めた履歴）と Spotify 公式ランキング -->
+  <div id="report-sheet" class="sheet" hidden>
+    <div class="sheet-body tall-scroll">
+      <h2>振り返り</h2>
+      <div id="report-tabs" class="seg">
+        <button data-tab="week">7日間</button>
+        <button data-tab="month">30日間</button>
+        <button data-tab="top">Spotify公式</button>
+      </div>
+      <div id="report-body" class="report"></div>
+      <button class="close-sheet secondary">閉じる</button>
+    </div>
+  </div>
+
+  <!-- イントロクイズ（曲名が見えないよう全画面で覆う） -->
+  <div id="quiz" class="quiz" hidden>
+    <header class="quiz-top">
+      <span id="quiz-progress"></span>
+      <span id="quiz-score"></span>
+      <button id="quiz-close" class="icon-btn" aria-label="クイズをやめる">
+        <svg viewBox="0 0 24 24"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4 6.4 5Z"/></svg>
+      </button>
+    </header>
+    <div id="quiz-stage" class="quiz-stage"></div>
+  </div>
+
+  <!-- 今日のまとめカード -->
+  <div id="card-sheet" class="sheet" hidden>
+    <div class="sheet-body">
+      <h2>今日のまとめ</h2>
+      <img id="card-img" class="card-img" alt="今日のまとめカード">
+      <button id="card-share" class="primary">共有・保存</button>
+      <a id="card-download" class="secondary center" download="today.png">画像をダウンロード</a>
+      <button class="close-sheet secondary">閉じる</button>
+    </div>
+  </div>
+
+  <!-- スタンバイ（時計）モード：タップで戻る -->
+  <!-- 各ブロック（data-sb）は設定の並び順で sb-col-a / sb-col-b に振り分ける -->
+  <div id="standby" class="standby" hidden>
+    <img id="sb-bg" class="sb-bg" alt="">
+    <div class="sb-inner">
+      <div id="sb-col-a" class="sb-col"></div>
+      <div id="sb-col-b" class="sb-col"></div>
+    </div>
+    <div id="sb-blocks" hidden>
+      <div data-sb="clock" class="sb-block sb-clock">
+        <span id="sb-ampm" class="sb-ampm"></span><span id="sb-time" class="sb-time">--:--</span><span id="sb-sec" class="sb-sec"></span>
+      </div>
+      <div data-sb="date" id="sb-date" class="sb-block sb-date"></div>
+      <div data-sb="now" class="sb-block sb-now">
+        <img id="sb-art" class="sb-art" alt="">
+        <div class="sb-text">
+          <div id="sb-title" class="sb-title"></div>
+          <div id="sb-artist" class="sb-artist"></div>
+          <div class="sb-bar"><div id="sb-fill"></div></div>
+        </div>
+      </div>
+      <div data-sb="next" class="sb-block sb-line">
+        <span class="sb-label">次</span><span id="sb-next"></span>
+      </div>
+      <div data-sb="today" class="sb-block sb-line">
+        <span class="sb-label">今日</span><span id="sb-today"></span>
+      </div>
+    </div>
+    <p class="sb-hint">タップで戻る</p>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js?v=9"></script>
+  <script src="extras.js?v=9"></script>
+</body>
+</html>
