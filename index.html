@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="icon-180.png">
   <link rel="icon" href="icon-180.png">
   <!-- ?v= は更新したときに古いファイルがキャッシュから使われないようにするため。変更したら数字を上げる -->
-  <link rel="stylesheet" href="style.css?v=9">
+  <link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
   <!-- 初期設定 / ログイン画面 -->
@@ -121,7 +121,7 @@
         <p id="stat-top" class="muted small" hidden></p>
         <p id="stat-note" class="muted small" hidden></p>
         <button id="relogin-btn" class="secondary" hidden>ログインし直して表示する</button>
-        <button id="card-btn" class="secondary">今日のまとめカードを作る</button>
+        <button id="card-btn" class="secondary">まとめカードを作る（今日・昨日）</button>
         <div class="btn-row">
           <button id="report-btn" class="secondary">振り返り・ランキング</button>
           <button id="quiz-btn" class="secondary">イントロクイズ</button>
@@ -306,11 +306,21 @@
     <div id="quiz-stage" class="quiz-stage"></div>
   </div>
 
-  <!-- 今日のまとめカード -->
+  <!-- まとめカード（今日・昨日 × 3つの構成） -->
   <div id="card-sheet" class="sheet" hidden>
     <div class="sheet-body">
-      <h2>今日のまとめ</h2>
-      <img id="card-img" class="card-img" alt="今日のまとめカード">
+      <h2>まとめカード</h2>
+      <div id="card-day" class="seg">
+        <button data-v="0">今日</button>
+        <button data-v="1">昨日</button>
+      </div>
+      <div id="card-template" class="seg seg-gap">
+        <button data-v="tiles">ジャケット</button>
+        <button data-v="artists">アーティスト</button>
+        <button data-v="record">通算記録</button>
+      </div>
+      <p id="card-empty" class="muted card-empty" hidden></p>
+      <img id="card-img" class="card-img" alt="まとめカード" hidden>
       <button id="card-share" class="primary">共有・保存</button>
       <a id="card-download" class="secondary center" download="today.png">画像をダウンロード</a>
       <button class="close-sheet secondary">閉じる</button>
@@ -338,6 +348,18 @@
           <div class="sb-bar"><div id="sb-fill"></div></div>
         </div>
       </div>
+      <div data-sb="controls" class="sb-block sb-controls">
+        <button id="sb-btn-prev" class="sb-btn" aria-label="前の曲">
+          <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6V5Zm3.5 7L19 5v14l-9.5-7Z"/></svg>
+        </button>
+        <button id="sb-btn-play" class="sb-btn sb-play" aria-label="再生 / 一時停止">
+          <svg id="sb-icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7L8 5Z"/></svg>
+          <svg id="sb-icon-pause" viewBox="0 0 24 24" hidden><path d="M6 5h4v14H6V5Zm8 0h4v14h-4V5Z"/></svg>
+        </button>
+        <button id="sb-btn-next" class="sb-btn" aria-label="次の曲">
+          <svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2V5ZM5 5l9.5 7L5 19V5Z"/></svg>
+        </button>
+      </div>
       <div data-sb="next" class="sb-block sb-line">
         <span class="sb-label">次</span><span id="sb-next"></span>
       </div>
@@ -350,7 +372,7 @@
 
   <div id="toast" class="toast" hidden></div>
 
-  <script src="app.js?v=9"></script>
-  <script src="extras.js?v=9"></script>
+  <script src="app.js?v=13"></script>
+  <script src="extras.js?v=13"></script>
 </body>
 </html>

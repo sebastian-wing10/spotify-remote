@@ -165,7 +165,7 @@ const DEFAULT_SETTINGS = {
   queueCount: 20,
   // スタンバイ（時計）モード
   sb: {
-    order: ['clock', 'date', 'now', 'next', 'today'],
+    order: ['clock', 'date', 'now', 'controls', 'next', 'today'],
     hidden: ['next', 'today'],
     size: 'm',
     weight: 'thin',
@@ -180,14 +180,21 @@ const SB_LABELS = {
   clock: '時計',
   date: '日付',
   now: '再生中の曲',
+  controls: '再生ボタン',
   next: '次の曲',
   today: '今日聞いた時間',
 };
 
-// 項目が増減しても壊れないよう、知らないIDは捨てて足りないIDは末尾に足す
+// 項目が増減しても壊れないよう、知らないIDは捨てる。
+// 後から増えた項目は、初期の並び順で直前にある項目のすぐ後ろに入れる
 function normalizeOrder(order, labels) {
   const o = order.filter((id) => id in labels);
-  Object.keys(labels).forEach((id) => { if (!o.includes(id)) o.push(id); });
+  const defaults = Object.keys(labels);
+  defaults.forEach((id, i) => {
+    if (o.includes(id)) return;
+    const prev = defaults.slice(0, i).reverse().find((p) => o.includes(p));
+    o.splice(prev ? o.indexOf(prev) + 1 : 0, 0, id);
+  });
   return o;
 }
 
@@ -1158,6 +1165,10 @@ function renderStandby() {
   const dur = item?.duration_ms || 0;
   $('sb-fill').style.width = dur ? (currentPosition() / dur * 100) + '%' : '0';
 
+  $('sb-icon-play').toggleAttribute('hidden', !!state?.is_playing);
+  $('sb-icon-pause').toggleAttribute('hidden', !state?.is_playing);
+  ['sb-btn-prev', 'sb-btn-play', 'sb-btn-next'].forEach((id) => { $(id).disabled = !state?.device; });
+
   const next = lastQueue[0];
   $('sb-next').textContent = next ? `${next.name} — ${artistOf(next)}` : 'キューは空です';
   $('sb-today').textContent = lastStats ? `${fmtLong(lastStats.ms)} · ${lastStats.items.length}曲` : '–';
@@ -1178,7 +1189,7 @@ function closeStandby() {
   wakeLock = null;
 }
 
-// ===== 今日のまとめカード =====
+// ===== まとめカード（今日・昨日 × 3つの構成） =====
 // 1080×1350 の画像を canvas で描いて、iPhone の共有シートで保存・共有できるようにする
 function loadImage(url) {
   return new Promise((resolve) => {
@@ -1205,114 +1216,291 @@ function roundRect(ctx, x, y, w, h, r) {
 }
 
 let cardBlob = null;
+let cardDay = 0; // 0 = 今日, 1 = 昨日
+let cardTemplate = store.get('card_template') || 'tiles';
 
-async function makeCard() {
-  if (!lastStats) { toast('今日の再生履歴を読み込み中です'); loadStats(); return; }
-  toast('カードを作っています…');
-  const { ms, items, top } = lastStats;
-  const W = 1080, H = 1350, P = 80;
-  const FONT = '-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", sans-serif';
+const CARD_W = 1080, CARD_H = 1350, CARD_P = 80;
+const CARD_FONT = '-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", sans-serif';
+
+// その日の集計：曲とアーティストの順位、通算回数、初めて聞いた曲
+async function dayData(offset) {
+  await loadHistory();
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - offset);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  const s = start.getTime(), e = end.getTime();
+
+  const plays = playsBetween(s, e); // 新しい順
+  let ms = plays.reduce((sum, it) => sum + (it.track.duration_ms || 0), 0);
+  // 今日は、再生中の曲（まだ履歴に入っていない）の聞いた分も足す
+  if (offset === 0 && state?.item?.type === 'track') ms += currentPosition();
+
+  // 通算（端末の記録＝最大1年分のうち、その日の終わりまで）と、最初に聞いた時刻
+  const total = new Map();
+  const first = new Map();
+  let allMs = 0;
+  playLog.plays.forEach(([t, id]) => {
+    if (t >= e) return;
+    total.set(id, (total.get(id) || 0) + 1);
+    if (!first.has(id) || t < first.get(id)) first.set(id, t);
+    allMs += playLog.tracks[id]?.duration_ms || 0;
+  });
+
+  // 曲の順位（同じ回数なら最近聞いた方が上）
+  const tracks = new Map();
+  plays.forEach((it, i) => {
+    const c = tracks.get(it.track.id) || { track: it.track, n: 0, recent: i };
+    c.n++;
+    tracks.set(it.track.id, c);
+  });
+  const trackRank = [...tracks.values()]
+    .sort((a, b) => b.n - a.n || a.recent - b.recent)
+    .map((c) => ({ ...c, total: total.get(c.track.id) || c.n, isNew: first.get(c.track.id) >= s }));
+
+  // アーティストの順位（1人目のアーティストで数える）。画像はその人の一番聞いた曲のジャケット
+  const artists = new Map();
+  plays.forEach((it) => {
+    const name = it.track.artists?.[0]?.name;
+    if (!name) return;
+    const a = artists.get(name) || { name, n: 0, ms: 0, songs: new Map() };
+    a.n++;
+    a.ms += it.track.duration_ms || 0;
+    a.songs.set(it.track.id, (a.songs.get(it.track.id) || 0) + 1);
+    artists.set(name, a);
+  });
+  const artistRank = [...artists.values()].sort((a, b) => b.n - a.n || b.ms - a.ms).map((a) => {
+    const [topId] = [...a.songs].sort((x, y) => y[1] - x[1])[0];
+    return { name: a.name, n: a.n, ms: a.ms, img: imageOf(tracks.get(topId).track) };
+  });
+
+  return {
+    offset,
+    start,
+    plays,
+    ms,
+    trackRank,
+    artistRank,
+    newCount: [...tracks.keys()].filter((id) => first.get(id) >= s).length,
+    allMs,
+    allCount: [...total.values()].reduce((sum, n) => sum + n, 0),
+    since: playLog.plays.length ? playLog.plays[playLog.plays.length - 1][0] : null,
+  };
+}
+
+// ---- 描画の部品 ----
+// max を超えるときは「…」で切る。shrink なら切らずに文字を小さくして収める
+function cardText(ctx, str, x, y, { size = 32, weight = 400, alpha = 1, color = '#fff', align = 'left', max, shrink = false } = {}) {
+  ctx.font = `${weight} ${size}px ${CARD_FONT}`;
+  while (shrink && max && size > 20 && ctx.measureText(str).width > max) {
+    size -= 2;
+    ctx.font = `${weight} ${size}px ${CARD_FONT}`;
+  }
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.fillText(max ? fitText(ctx, str, max) : str, x, y);
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+}
+
+function cardImage(ctx, img, x, y, size, r) {
+  ctx.save();
+  roundRect(ctx, x, y, size, size, r);
+  ctx.clip();
+  if (img) ctx.drawImage(img, x, y, size, size);
+  else { ctx.fillStyle = 'rgba(255, 255, 255, .08)'; ctx.fill(); }
+  ctx.restore();
+}
+
+function cardPanel(ctx, x, y, w, h) {
+  ctx.fillStyle = 'rgba(255, 255, 255, .08)';
+  roundRect(ctx, x, y, w, h, 24);
+  ctx.fill();
+}
+
+function cardColors() {
   const css = getComputedStyle(document.documentElement);
-  const c1 = css.getPropertyValue('--c1').trim() || settings.accent;
-  const c2 = css.getPropertyValue('--c2').trim() || '#3d91f4';
+  return {
+    c1: css.getPropertyValue('--c1').trim() || settings.accent,
+    c2: css.getPropertyValue('--c2').trim() || '#3d91f4',
+  };
+}
 
+function cardBase(d, title) {
+  const { c1, c2 } = cardColors();
   const cv = document.createElement('canvas');
-  cv.width = W; cv.height = H;
+  cv.width = CARD_W;
+  cv.height = CARD_H;
   const ctx = cv.getContext('2d');
-
   // 背景：黒地にジャケット色の光
   ctx.fillStyle = '#0b0b0e';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(0, 0, CARD_W, CARD_H);
   [[c1, 150, 200, 700], [c2, 980, 1150, 750]].forEach(([c, x, y, r]) => {
     const g = ctx.createRadialGradient(x, y, 0, x, y, r);
     g.addColorStop(0, c);
     g.addColorStop(1, 'transparent');
     ctx.globalAlpha = .55;
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, CARD_W, CARD_H);
   });
   ctx.globalAlpha = 1;
+  const P = CARD_P;
+  cardText(ctx, `${d.offset ? "YESTERDAY'S" : "TODAY'S"} ${title}`, P, 130, { size: 34, weight: 700 });
+  cardText(ctx, d.start.toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }), P, 180, { alpha: .7 });
+  cardText(ctx, 'Spotify Remote', P, CARD_H - 56, { size: 28, weight: 500, alpha: .4 });
+  return { cv, ctx, c1 };
+}
 
-  ctx.fillStyle = '#fff';
-  ctx.font = `700 34px ${FONT}`;
-  ctx.fillText("TODAY'S SOUNDTRACK", P, 130);
-  ctx.globalAlpha = .7;
-  ctx.font = `400 32px ${FONT}`;
-  ctx.fillText(new Date().toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }), P, 180);
-  ctx.globalAlpha = 1;
-
-  ctx.font = `800 150px ${FONT}`;
-  ctx.fillText(fmtLong(ms), P, 360);
-  ctx.font = `500 40px ${FONT}`;
-  ctx.globalAlpha = .85;
-  ctx.fillText(fitText(ctx, `${items.length}曲${top ? `　よく聞いた：${top.name}` : ''}`, W - P * 2), P, 430);
-  ctx.globalAlpha = 1;
+// ---- 構成1：ジャケット（タイル＋よく聞いた曲ベスト3） ----
+async function drawTilesCard(d) {
+  const { cv, ctx, c1 } = cardBase(d, 'SOUNDTRACK');
+  const P = CARD_P, W = CARD_W;
+  cardText(ctx, fmtLong(d.ms), P, 360, { size: 150, weight: 800, max: W - P * 2, shrink: true });
+  const top = d.artistRank[0];
+  cardText(ctx, `${d.plays.length}曲${top && top.n > 1 ? `　よく聞いた：${top.name}` : ''}`, P, 430,
+    { size: 40, weight: 500, alpha: .85, max: W - P * 2 });
 
   // ジャケットのタイル（同じアルバムは1回だけ）
-  const urls = [...new Set(items.map((it) => imageOf(it.track)).filter(Boolean))].slice(0, 8);
+  const urls = [...new Set(d.plays.map((it) => imageOf(it.track)).filter(Boolean))].slice(0, 8);
   const imgs = (await Promise.all(urls.map(loadImage))).filter(Boolean);
   const tile = (W - P * 2 - 3 * 24) / 4;
-  imgs.forEach((img, i) => {
-    const x = P + (i % 4) * (tile + 24);
-    const y = 480 + Math.floor(i / 4) * (tile + 24);
-    ctx.save();
-    roundRect(ctx, x, y, tile, tile, 18);
-    ctx.clip();
-    ctx.drawImage(img, x, y, tile, tile);
-    ctx.restore();
-  });
+  imgs.forEach((img, i) => cardImage(ctx, img, P + (i % 4) * (tile + 24), 480 + Math.floor(i / 4) * (tile + 24), tile, 18));
 
-  // よく聞いた曲ベスト3（同数なら新しい順）
-  const counts = new Map();
-  items.forEach((it) => {
-    const k = it.track?.id;
-    if (!k) return;
-    const c = counts.get(k) || { track: it.track, n: 0 };
-    c.n++;
-    counts.set(k, c);
-  });
-  const best = [...counts.values()].sort((a, b) => b.n - a.n).slice(0, 3);
-  const rows = Math.ceil(imgs.length / 4);
-  let y = 480 + rows * (tile + 24) + 56;
-  ctx.font = `700 34px ${FONT}`;
-  ctx.fillText('よく聞いた曲', P, y);
+  let y = 480 + Math.ceil(imgs.length / 4) * (tile + 24) + 56;
+  cardText(ctx, 'よく聞いた曲', P, y, { size: 34, weight: 700 });
   y += 10;
-  best.forEach((b, i) => {
+  d.trackRank.slice(0, 3).forEach((b, i) => {
     y += 62;
-    ctx.font = `800 40px ${FONT}`;
+    cardText(ctx, String(i + 1), P, y, { size: 40, weight: 800, color: c1 });
+    cardText(ctx, `${b.track.name} — ${artistOf(b.track)}`, P + 56, y, { size: 38, weight: 600, max: W - P * 2 - 150 });
+    cardText(ctx, `${b.n}回`, W - P, y, { alpha: .6, align: 'right' });
+  });
+  return cv;
+}
+
+// ---- 構成2：アーティスト順位 ----
+async function drawArtistsCard(d) {
+  const { cv, ctx, c1 } = cardBase(d, 'ARTISTS');
+  const P = CARD_P, W = CARD_W;
+  cardText(ctx, fmtLong(d.ms), P, 330, { size: 130, weight: 800, max: W - P * 2, shrink: true });
+  cardText(ctx, `${d.plays.length}曲・${d.artistRank.length}組のアーティスト`, P, 400, { size: 38, weight: 500, alpha: .85 });
+
+  const top = d.artistRank.slice(0, 5);
+  const imgs = await Promise.all(top.map((a) => (a.img ? loadImage(a.img) : null)));
+  const max = top[0]?.n || 1;
+  const IMG = 120, ROW = 148;
+  const tx = P + 64 + IMG + 32;
+  const barW = W - P - tx;
+  top.forEach((a, i) => {
+    const y = 460 + i * ROW;
+    cardText(ctx, String(i + 1), P + 20, y + IMG / 2 + 18, { size: 52, weight: 800, color: i === 0 ? c1 : '#fff', align: 'center' });
+    cardImage(ctx, imgs[i], P + 64, y, IMG, IMG / 2); // アーティストらしく丸く
+    cardText(ctx, a.name, tx, y + 42, { size: 40, weight: 700, max: barW });
+    // 一番多い人を満タンとした棒
+    ctx.fillStyle = 'rgba(255, 255, 255, .12)';
+    roundRect(ctx, tx, y + 60, barW, 14, 7);
+    ctx.fill();
     ctx.fillStyle = c1;
-    ctx.fillText(String(i + 1), P, y);
-    ctx.fillStyle = '#fff';
-    ctx.font = `600 38px ${FONT}`;
-    const name = `${b.track.name} — ${artistOf(b.track)}`;
-    ctx.fillText(fitText(ctx, name, W - P * 2 - 150), P + 56, y);
-    ctx.globalAlpha = .6;
-    ctx.font = `400 32px ${FONT}`;
-    ctx.textAlign = 'right';
-    ctx.fillText(`${b.n}回`, W - P, y);
-    ctx.textAlign = 'left';
-    ctx.globalAlpha = 1;
+    roundRect(ctx, tx, y + 60, Math.max(barW * a.n / max, 14), 14, 7);
+    ctx.fill();
+    const pct = Math.round(a.n / d.plays.length * 100);
+    cardText(ctx, `${a.n}曲 · ${fmtLong(a.ms)} · ${pct}%`, tx, y + 112, { size: 28, alpha: .7 });
+  });
+  const rest = d.artistRank.length - top.length;
+  if (rest > 0) cardText(ctx, `ほか ${rest}組`, P, 460 + top.length * ROW + 40, { size: 30, alpha: .6 });
+  return cv;
+}
+
+// ---- 構成3：通算記録（この日の回数と通算回数、初めて聞いた曲） ----
+async function drawRecordCard(d) {
+  const { cv, ctx, c1 } = cardBase(d, 'RECORD');
+  const P = CARD_P, W = CARD_W;
+
+  // 上の3つの数字
+  const boxW = (W - P * 2 - 2 * 24) / 3;
+  [['この日', fmtLong(d.ms)], ['曲数', `${d.plays.length}曲`], ['初めて聞いた曲', `${d.newCount}曲`]].forEach(([label, value], i) => {
+    const x = P + i * (boxW + 24);
+    cardPanel(ctx, x, 230, boxW, 170);
+    cardText(ctx, label, x + 28, 290, { size: 28, alpha: .7, max: boxW - 56 });
+    cardText(ctx, value, x + 28, 365, { size: 54, weight: 800, color: i === 2 ? c1 : '#fff', max: boxW - 56, shrink: true });
   });
 
-  ctx.globalAlpha = .4;
-  ctx.font = `500 28px ${FONT}`;
-  ctx.fillText('Spotify Remote', P, H - 56);
-  ctx.globalAlpha = 1;
+  cardText(ctx, 'よく聞いた曲', P, 480, { size: 34, weight: 700 });
+  const top = d.trackRank.slice(0, 5);
+  const imgs = await Promise.all(top.map((t) => { const u = imageOf(t.track); return u ? loadImage(u) : null; }));
+  const IMG = 100, ROW = 128;
+  top.forEach((t, i) => {
+    const y = 516 + i * ROW;
+    cardImage(ctx, imgs[i], P, y, IMG, 14);
+    const tx = P + IMG + 28;
+    const tw = W - P - tx - 220;
+    cardText(ctx, t.track.name, tx, y + 44, { size: 36, weight: 700, max: tw });
+    cardText(ctx, artistOf(t.track), tx, y + 84, { size: 28, alpha: .7, max: tw });
+    cardText(ctx, `${t.n}回`, W - P, y + 46, { size: 44, weight: 800, color: c1, align: 'right' });
+    // 初めて聞いた日なら「NEW」、そうでなければ通算回数
+    cardText(ctx, t.isNew ? 'NEW' : `通算 ${t.total}回`, W - P, y + 86,
+      { size: 28, weight: t.isNew ? 800 : 400, alpha: t.isNew ? 1 : .7, color: t.isNew ? c1 : '#fff', align: 'right' });
+  });
 
-  cardBlob = await new Promise((r) => cv.toBlob(r, 'image/png'));
-  if (!cardBlob) { toast('画像を作れませんでした'); return; }
+  // 記録開始からの通算
+  cardPanel(ctx, P, 1160, W - P * 2, 110);
+  cardText(ctx, `記録開始から 通算 ${fmtLong(d.allMs)}・${d.allCount.toLocaleString('ja-JP')}曲`, P + 32, 1210,
+    { size: 34, weight: 700, max: W - P * 2 - 64 });
+  if (d.since) cardText(ctx, `${new Date(d.since).toLocaleDateString('ja-JP')} からこの端末に記録`, P + 32, 1252, { size: 26, alpha: .6 });
+  return cv;
+}
+
+// ---- カード画面 ----
+function openCardSheet() {
+  $('card-sheet').hidden = false;
+  renderCard();
+}
+
+let cardRenderId = 0; // 切り替えを素早く押したとき、古い描画が後から上書きしないように
+
+async function renderCard() {
+  const myId = ++cardRenderId;
+  document.querySelectorAll('#card-day button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === cardDay));
+  document.querySelectorAll('#card-template button').forEach((b) => b.classList.toggle('on', b.dataset.v === cardTemplate));
+  const show = (hasCard) => {
+    $('card-img').hidden = !hasCard;
+    $('card-share').hidden = !hasCard || !$('card-share').dataset.ok;
+    $('card-download').hidden = !hasCard;
+  };
+  $('card-empty').hidden = false;
+  $('card-empty').textContent = 'カードを作っています…';
+  show(false);
+
+  const d = await dayData(cardDay);
+  if (myId !== cardRenderId) return;
+  if (!d.plays.length) {
+    $('card-empty').textContent = cardDay === 0
+      ? '今日の記録はまだありません。'
+      : '昨日の記録はありません（アプリで記録を始める前の日は作れません）。';
+    return;
+  }
+  const draw = { tiles: drawTilesCard, artists: drawArtistsCard, record: drawRecordCard }[cardTemplate];
+  const cv = await draw(d);
+  const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+  if (myId !== cardRenderId) return;
+  cardBlob = blob;
+  if (!cardBlob) { $('card-empty').textContent = '画像を作れませんでした'; return; }
+  const name = `${d.start.toLocaleDateString('sv-SE')}-${cardTemplate}.png`; // 2026-10-30-tiles.png
   const url = URL.createObjectURL(cardBlob);
   $('card-img').src = url;
   $('card-download').href = url;
-  const file = new File([cardBlob], 'today.png', { type: 'image/png' });
-  $('card-share').hidden = !(navigator.canShare && navigator.canShare({ files: [file] }));
-  $('card-sheet').hidden = false;
-  $('toast').hidden = true;
+  $('card-download').download = name;
+  const file = new File([cardBlob], name, { type: 'image/png' });
+  $('card-share').dataset.ok = navigator.canShare && navigator.canShare({ files: [file] }) ? '1' : '';
+  $('card-empty').hidden = true;
+  show(true);
 }
 
 async function shareCard() {
   if (!cardBlob) return;
-  const file = new File([cardBlob], 'today.png', { type: 'image/png' });
+  const file = new File([cardBlob], $('card-download').download || 'card.png', { type: 'image/png' });
   try {
     await navigator.share({ files: [file] });
   } catch {
@@ -1395,7 +1583,21 @@ function bind() {
   $('sb-preview').addEventListener('click', openStandby);
   landscapeMq.addEventListener('change', applyStandby);
   $('standby').addEventListener('click', closeStandby);
-  $('card-btn').addEventListener('click', makeCard);
+  // 再生ボタンを押したときは時計モードを閉じない
+  [['sb-btn-prev', () => skip(-1)], ['sb-btn-play', togglePlay], ['sb-btn-next', () => skip(1)]].forEach(([id, fn]) => {
+    $(id).addEventListener('click', (e) => {
+      e.stopPropagation();
+      fn();
+      renderStandby();
+    });
+  });
+  $('card-btn').addEventListener('click', openCardSheet);
+  document.querySelectorAll('#card-day button').forEach((b) => b.addEventListener('click', () => { cardDay = Number(b.dataset.v); renderCard(); }));
+  document.querySelectorAll('#card-template button').forEach((b) => b.addEventListener('click', () => {
+    cardTemplate = b.dataset.v;
+    store.set('card_template', cardTemplate);
+    renderCard();
+  }));
   $('card-share').addEventListener('click', shareCard);
   bindArtGestures();
   document.querySelectorAll('.seg[data-key]').forEach((seg) => {
